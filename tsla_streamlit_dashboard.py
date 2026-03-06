@@ -119,10 +119,14 @@ st.markdown("""
 
 @st.cache_data
 def fetch_data(ticker="TSLA", start="2019-01-01", end="2024-01-01"):
-    df = yf.download(ticker, start=start, end=end, auto_adjust=True)
+    df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
+    # Flatten MultiIndex columns from newer yfinance versions
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df = df[["Open","High","Low","Close","Volume"]].copy()
+    # Force every column to be a flat 1D Series
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col].squeeze(), errors="coerce")
     df.dropna(inplace=True)
     return df
 
@@ -160,22 +164,23 @@ def calculate_indicators(df):
 
 def calculate_var_cvar(returns, confidence_levels=[0.90, 0.95, 0.99]):
     results = {}
-    # Force to flat numpy array — fixes yfinance MultiIndex issues
-    r = np.array(returns.squeeze().dropna().values, dtype=float)
-    r = r[~np.isnan(r)]  # extra safety: remove any remaining NaNs
+    # Bulletproof conversion to clean 1D float array
+    r = np.array(pd.Series(returns).squeeze().dropna().values, dtype=np.float64).flatten()
+    r = r[np.isfinite(r)]  # remove NaN and Inf
     for cl in confidence_levels:
         alpha = 1 - cl
         label = f"{int(cl*100)}%"
-        mu, sigma = float(np.mean(r)), float(np.std(r))
-        z = stats.norm.ppf(alpha)
+        mu    = float(np.mean(r))
+        sigma = float(np.std(r))
+        z     = stats.norm.ppf(alpha)
         hist_var   = float(np.percentile(r, alpha * 100))
         hist_cvar  = float(np.mean(r[r <= hist_var]))
         para_var   = mu + z * sigma
         para_cvar  = mu - sigma * (stats.norm.pdf(z) / alpha)
         np.random.seed(42)
-        sim        = np.random.normal(mu, sigma, 10000)
-        mc_var     = float(np.percentile(sim, alpha * 100))
-        mc_cvar    = float(np.mean(sim[sim <= mc_var]))
+        sim      = np.random.normal(mu, sigma, 10000)
+        mc_var   = float(np.percentile(sim, alpha * 100))
+        mc_cvar  = float(np.mean(sim[sim <= mc_var]))
         results[label] = {
             "Historical VaR":   hist_var,  "Historical CVaR":  hist_cvar,
             "Parametric VaR":   para_var,  "Parametric CVaR":  para_cvar,
@@ -380,8 +385,10 @@ with st.spinner("⏳ Fetching TSLA data from Yahoo Finance..."):
     raw_df      = fetch_data()
     ret_df      = calculate_returns(raw_df)
     full_df     = calculate_indicators(ret_df)
-    # Force flat numpy-compatible Series
-    log_returns = full_df["Log_Return"].squeeze().dropna().reset_index(drop=True)
+    # Convert Log_Return to clean flat 1D Series
+    log_returns = pd.Series(
+        full_df["Log_Return"].values.flatten(), dtype=np.float64
+    ).dropna()
     var_data    = calculate_var_cvar(log_returns)
     st_data     = calculate_risk_stats(full_df)
 
