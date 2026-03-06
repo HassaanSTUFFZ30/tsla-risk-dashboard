@@ -375,11 +375,13 @@ def cumulative_chart(st_data):
 #  LOAD DATA
 # =============================================================
 with st.spinner("⏳ Fetching TSLA data from Yahoo Finance..."):
-    raw_df   = fetch_data()
-    ret_df   = calculate_returns(raw_df)
-    full_df  = calculate_indicators(ret_df)
-    var_data = calculate_var_cvar(full_df["Log_Return"])
-    st_data  = calculate_risk_stats(full_df)
+    raw_df      = fetch_data()
+    ret_df      = calculate_returns(raw_df)
+    full_df     = calculate_indicators(ret_df)
+    # .squeeze() ensures it's a flat 1D Series — fixes yfinance MultiIndex issue
+    log_returns = full_df["Log_Return"].squeeze().dropna()
+    var_data    = calculate_var_cvar(log_returns)
+    st_data     = calculate_risk_stats(full_df)
 
 # =============================================================
 #  HEADER
