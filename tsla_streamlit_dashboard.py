@@ -162,25 +162,54 @@ def calculate_indicators(df):
     df["Vol_60d"] = df["Log_Return"].rolling(60).std() * np.sqrt(252)
     return df
 
+def safe_percentile(data, pct):
+    """
+    Pure Python percentile — avoids numpy version compatibility issues.
+    Works on any Python/numpy version.
+    """
+    sorted_data = sorted([float(x) for x in data if x == x])  # x==x removes NaN
+    n = len(sorted_data)
+    if n == 0:
+        return 0.0
+    idx = (pct / 100) * (n - 1)
+    lower = int(idx)
+    upper = min(lower + 1, n - 1)
+    frac  = idx - lower
+    return sorted_data[lower] + frac * (sorted_data[upper] - sorted_data[lower])
+
 def calculate_var_cvar(returns, confidence_levels=[0.90, 0.95, 0.99]):
     results = {}
-    # Bulletproof conversion to clean 1D float array
-    r = np.array(pd.Series(returns).squeeze().dropna().values, dtype=np.float64).flatten()
-    r = r[np.isfinite(r)]  # remove NaN and Inf
+    # Convert to plain Python list of floats — works on all numpy/Python versions
+    raw   = returns.squeeze().dropna() if hasattr(returns, "squeeze") else returns
+    r_list = [float(x) for x in raw if str(x) != "nan"]
+    r_arr  = [x for x in r_list if not (x != x)]  # remove any remaining NaN
+
+    mu    = float(sum(r_arr) / len(r_arr))
+    deviations = [(x - mu) ** 2 for x in r_arr]
+    sigma = float((sum(deviations) / len(deviations)) ** 0.5)
+
     for cl in confidence_levels:
         alpha = 1 - cl
         label = f"{int(cl*100)}%"
-        mu    = float(np.mean(r))
-        sigma = float(np.std(r))
-        z     = stats.norm.ppf(alpha)
-        hist_var   = float(np.percentile(r, alpha * 100))
-        hist_cvar  = float(np.mean(r[r <= hist_var]))
-        para_var   = mu + z * sigma
-        para_cvar  = mu - sigma * (stats.norm.pdf(z) / alpha)
-        np.random.seed(42)
-        sim      = np.random.normal(mu, sigma, 10000)
-        mc_var   = float(np.percentile(sim, alpha * 100))
-        mc_cvar  = float(np.mean(sim[sim <= mc_var]))
+        z = stats.norm.ppf(alpha)
+
+        # Historical VaR using pure Python percentile
+        hist_var  = safe_percentile(r_arr, alpha * 100)
+        tail      = [x for x in r_arr if x <= hist_var]
+        hist_cvar = float(sum(tail) / len(tail)) if tail else hist_var
+
+        # Parametric
+        para_var  = mu + z * sigma
+        para_cvar = mu - sigma * (stats.norm.pdf(z) / alpha)
+
+        # Monte Carlo
+        import random
+        random.seed(42)
+        sim_list  = [random.gauss(mu, sigma) for _ in range(10000)]
+        mc_var    = safe_percentile(sim_list, alpha * 100)
+        mc_tail   = [x for x in sim_list if x <= mc_var]
+        mc_cvar   = float(sum(mc_tail) / len(mc_tail)) if mc_tail else mc_var
+
         results[label] = {
             "Historical VaR":   hist_var,  "Historical CVaR":  hist_cvar,
             "Parametric VaR":   para_var,  "Parametric CVaR":  para_cvar,
